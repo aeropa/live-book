@@ -1,1 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Groq AI Speed Learning Game</title>
+    <!-- Marked.js for rendering Markdown -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        :root {
+            --primary: #f97316; /* Groq Orange */
+            --bg: #1e1e2f;
+            --panel-bg: #2a2a40;
+            --text: #ffffff;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        #app-container {
+            background-color: var(--panel-bg);
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            width: 100%;
+            max-width: 800px;
+        }
+        .hidden { display: none !important; }
+        h1, h2 { color: var(--primary); text-align: center; }
+        input[type="text"], input[type="password"] {
+            width: 100%;
+            padding: 12px;
+            margin: 10px 0;
+            border-radius: 6px;
+            border: 1px solid #555;
+            background: #1e1e2f;
+            color: white;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 16px;
+            width: 100%;
+            margin-top: 10px;
+            transition: 0.3s;
+        }
+        button:hover { background-color: #ea580c; }
+        button:disabled { background-color: #555; cursor: not-allowed; }
+        
+        /* Timer styles */
+        .timer-bar { height: 10px; background: #555; border-radius: 5px; margin: 20px 0; overflow: hidden; }
+        .timer-fill { height: 100%; background: var(--primary); width: 100%; transition: width 1s linear; }
+        .time-text { text-align: center; font-size: 24px; font-weight: bold; color: #ef4444; }
+        
+        /* Material styles */
+        #markdown-content { background: #1e1e2f; padding: 20px; border-radius: 8px; max-height: 50vh; overflow-y: auto; line-height: 1.6; }
+        
+        /* Quiz styles */
+        .option-btn { background: #3f3f5a; margin-bottom: 10px; text-align: left; }
+        .option-btn:hover { background: #4f4f7a; }
+        .loading { text-align: center; font-style: italic; color: #aaa; margin: 20px 0; }
+    </style>
+</head>
+<body>
 
+<div id="app-container">
+    <h1>🧠 Speed Learner</h1>
+    
+    <!-- PHASE 1: Setup -->
+    <div id="setup-phase">
+        <p>Learn any topic in 60 seconds, then face a 10-question rapid-fire quiz!</p>
+        <label>Groq API Key (Stored locally):</label>
+        <input type="password" id="api-key" placeholder="gsk_...">
+        <label>What do you want to learn?</label>
+        <input type="text" id="topic" placeholder="e.g., The History of Computers">
+        <button id="start-btn" onclick="startGame()">Generate Learning Material</button>
+        <div id="loading-msg" class="loading hidden">Consulting the Groq AI... Please wait.</div>
+    </div>
+
+    <!-- PHASE 2: Learning Material -->
+    <div id="learning-phase" class="hidden">
+        <h2>Learn Fast!</h2>
+        <div class="time-text" id="learn-timer-text">60</div>
+        <div class="timer-bar"><div class="timer-fill" id="learn-timer-fill"></div></div>
+        <div id="markdown-content"></div>
+        <div id="generating-quiz-msg" class="loading">Generating your quiz in the background...</div>
+        <button id="skip-learn-btn" class="hidden" onclick="startQuiz()">I'm ready! Start Quiz</button>
+    </div>
+
+    <!-- PHASE 3: Quiz -->
+    <div id="quiz-phase" class="hidden">
+        <h2>Question <span id="q-current">1</span>/10</h2>
+        <div class="time-text" id="quiz-timer-text">15</div>
+        <div class="timer-bar"><div class="timer-fill" id="quiz-timer-fill"></div></div>
+        <h3 id="question-text"></h3>
+        <div id="options-container"></div>
+    </div>
+
+    <!-- PHASE 4: Results -->
+    <div id="result-phase" class="hidden">
+        <h2>Quiz Complete!</h2>
+        <h1 style="font-size: 48px;" id="final-score"></h1>
+        <p id="feedback-msg"></p>
+        <button onclick="resetGame()">Learn Another Topic</button>
+    </div>
+</div>
+
+<script>
+    // App State
+    let apiKey = '';
+    let currentTopic = '';
+    let learningMaterial = '';
+    let quizData = [];
+    let currentQuestionIndex = 0;
+    let score = 0;
+    let timerInterval;
+
+    const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+    const MODEL = 'llama3-8b-8192'; // Fast and capable model
+
+    // Utility: Call Groq API
+    async function callGroq(prompt, systemMsg = "You are a helpful assistant.") {
+        const response = await fetch(GROQ_API_URL, {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                model: MODEL,
+                messages: [
+                    { role: 'system', content: systemMsg },
+                    { role: 'user', content: prompt }
+                ],
+                temperature: 0.3
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`API Error: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        return data.choices[0].message.content;
+    }
+
+    // Timer Logic
+    function startTimer(seconds, textEl, fillEl, onComplete) {
+        clearInterval(timerInterval);
+        let timeLeft = seconds;
+        textEl.innerText = timeLeft;
+        fillEl.style.width = '100%';
+        fillEl.style.transition = `width ${seconds}s linear`;
+        
+        // Trigger reflow to ensure transition animation plays
+        void fillEl.offsetWidth; 
+        fillEl.style.width = '0%';
+
+        timerInterval = setInterval(() => {
+            timeLeft--;
+            textEl.innerText = timeLeft;
+            if (timeLeft <= 0) {
+                clearInterval(timerInterval);
+                onComplete();
+            }
+        }, 1000);
+    }
+
+    // Phase 1 -> 2: Start Game & Get Material
+    async function startGame() {
+        apiKey = document.getElementById('api-key').value.trim();
+        currentTopic = document.getElementById('topic').value.trim();
+
+        if (!apiKey || !currentTopic) {
+            alert("Please enter both an API key and a topic.");
+            return;
+        }
+
+        document.getElementById('start-btn').classList.add('hidden');
+        document.getElementById('loading-msg').classList.remove('hidden');
+
+        try {
+            const prompt = `Write a concise, highly educational summary about "${currentTopic}". 
+            Format it in Markdown. It must be readable in under 60 seconds. Do not include conversational filler, just the facts.`;
+            
+            learningMaterial = await callGroq(prompt);
+            
+            // Render Markdown
+            document.getElementById('markdown-content').innerHTML = marked.parse(learningMaterial);
+            
+            // Switch UI
+            document.getElementById('setup-phase').classList.add('hidden');
+            document.getElementById('learning-phase').classList.remove('hidden');
+            
+            // Start 60s learning timer
+            startTimer(60, document.getElementById('learn-timer-text'), document.getElementById('learn-timer-fill'), startQuiz);
+
+            // Fetch questions in the background while user reads
+            generateQuizData();
+
+        } catch (error) {
+            alert(error.message);
+            document.getElementById('start-btn').classList.remove('hidden');
+            document.getElementById('loading-msg').classList.add('hidden');
+        }
+    }
+
+    // Background Task: Generate 10 Questions based on material
+    async function generateQuizData() {
+        try {
+            const prompt = `Based ONLY on the following text, generate exactly 10 multiple-choice questions. 
+            Output strictly as a raw JSON array of objects without any markdown formatting, backticks, or conversational text. 
+            Format exactly like this: [{"question": "...", "options": ["A", "B", "C", "D"], "answerIndex": 0}]
+            
+            Text to base questions on:
+            ${learningMaterial}`;
+
+            const responseText = await callGroq(prompt, "You are a JSON generating machine. Output ONLY valid JSON array.");
+            
+            // Extract JSON in case the LLM wrapped it in markdown backticks
+            const jsonMatch = responseText.match(/\[\s*\{.*\}\s*\]/s);
+            const cleanJson = jsonMatch ? jsonMatch[0] : responseText;
+            
+            quizData = JSON.parse(cleanJson);
+            
+            // Allow user to skip timer once questions are ready
+            if(quizData.length > 0) {
+                document.getElementById('generating-quiz-msg').classList.add('hidden');
+                document.getElementById('skip-learn-btn').classList.remove('hidden');
+            }
+        } catch (error) {
+            console.error("Failed to generate quiz:", error);
+            document.getElementById('generating-quiz-msg').innerText = "Failed to generate questions. Please refresh and try again.";
+        }
+    }
+
+    // Phase 2 -> 3: Start Quiz
+    function startQuiz() {
+        if (quizData.length === 0) {
+            alert("Still generating questions, please wait a few seconds...");
+            return;
+        }
+        clearInterval(timerInterval);
+        document.getElementById('learning-phase').classList.add('hidden');
+        document.getElementById('quiz-phase').classList.remove('hidden');
+        
+        currentQuestionIndex = 0;
+        score = 0;
+        loadQuestion();
+    }
+
+    // Load Single Question
+    function loadQuestion() {
+        if (currentQuestionIndex >= quizData.length || currentQuestionIndex >= 10) {
+            showResults();
+            return;
+        }
+
+        const qData = quizData[currentQuestionIndex];
+        document.getElementById('q-current').innerText = currentQuestionIndex + 1;
+        document.getElementById('question-text').innerText = qData.question;
+        
+        const optionsContainer = document.getElementById('options-container');
+        optionsContainer.innerHTML = ''; // Clear old options
+
+        qData.options.forEach((opt, index) => {
+            const btn = document.createElement('button');
+            btn.className = 'option-btn';
+            btn.innerText = opt;
+            btn.onclick = () => handleAnswer(index, qData.answerIndex);
+            optionsContainer.appendChild(btn);
+        });
+
+        // 15 seconds per question
+        startTimer(15, document.getElementById('quiz-timer-text'), document.getElementById('quiz-timer-fill'), () => handleAnswer(-1, qData.answerIndex));
+    }
+
+    // Handle user click or timeout
+    function handleAnswer(selectedIndex, correctIndex) {
+        clearInterval(timerInterval);
+        
+        if (selectedIndex === correctIndex) {
+            score++;
+        }
+
+        currentQuestionIndex++;
+        loadQuestion();
+    }
+
+    // Phase 3 -> 4: Results
+    function showResults() {
+        document.getElementById('quiz-phase').classList.add('hidden');
+        document.getElementById('result-phase').classList.remove('hidden');
+        
+        document.getElementById('final-score').innerText = `${score} / 10`;
+        
+        let feedback = "Great job!";
+        if(score < 5) feedback = "You might need to read a bit faster next time!";
+        if(score === 10) feedback = "Perfect score! You are a speed-reading master!";
+        document.getElementById('feedback-msg').innerText = feedback;
+    }
+
+    // Reset Game
+    function resetGame() {
+        document.getElementById('result-phase').classList.add('hidden');
+        document.getElementById('setup-phase').classList.remove('hidden');
+        document.getElementById('start-btn').classList.remove('hidden');
+        document.getElementById('loading-msg').classList.add('hidden');
+        document.getElementById('generating-quiz-msg').classList.remove('hidden');
+        document.getElementById('skip-learn-btn').classList.add('hidden');
+        document.getElementById('topic').value = '';
+        quizData = [];
+    }
+</script>
+</body>
+</html>
