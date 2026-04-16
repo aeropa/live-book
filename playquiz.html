@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Quiz Generator & Game</title>
     
-    <!-- CSS Styling for a clean, modern look -->
     <style>
         :root {
             --primary: #3b82f6;
@@ -81,7 +80,6 @@
         .stats { display: flex; justify-content: space-between; margin-bottom: 1rem; font-weight: bold; }
     </style>
 
-    <!-- Define the importmap to load Vue 3 -->
     <script type="importmap">
         {
             "imports": {
@@ -159,10 +157,9 @@
 
         createApp({
             setup() {
-                // State
                 const apiKey = ref('');
                 const topic = ref('');
-                const gameState = ref('setup'); // 'setup', 'playing', 'finished'
+                const gameState = ref('setup');
                 const isLoading = ref(false);
                 const errorMessage = ref('');
                 
@@ -171,20 +168,18 @@
                 const score = ref(0);
                 const selectedAnswerIndex = ref(null);
 
-                // Computed
                 const currentQuestion = computed(() => quizData.value[currentQuestionIndex.value]);
                 const hasAnswered = computed(() => selectedAnswerIndex.value !== null);
                 const isLastQuestion = computed(() => currentQuestionIndex.value === quizData.value.length - 1);
 
-                // Methods
                 const generateQuiz = async () => {
                     if (!apiKey.value || !topic.value) return;
                     
                     isLoading.value = true;
                     errorMessage.value = '';
 
-                    // Enforce schema inside your specific 'input' string so our app can parse it correctly
-                    const promptInput = `In json format, create a multiple-choice quiz of 10 questions on the topic of ${topic.value}. Each question has 4 choices, and the answer key should provide explanation. Ensure the output is ONLY a valid JSON array of objects using this exact structure: [{"question": "...", "choices": ["...", "...", "...", "..."], "correctAnswerIndex": 0, "explanation": "..."}]`;
+                    // Stricter prompt to discourage extra conversational text
+                    const promptInput = `Return ONLY a valid JSON array. Do not include markdown formatting, backticks, or introductory text. Create a multiple-choice quiz of 10 questions on the topic of ${topic.value}. Each question has 4 choices, and the answer key should provide explanation. Output EXACTLY this structure: [{"question": "...", "choices": ["...", "...", "...", "..."], "correctAnswerIndex": 0, "explanation": "..."}]`;
 
                     try {
                         const response = await fetch('https://api.groq.com/openai/v1/responses', {
@@ -206,25 +201,54 @@
 
                         const data = await response.json();
                         
-                        // Parse JSON from the AI response. 
-                        // Note: Depending on your exact endpoint's return envelope, we search for the response string.
                         let aiText = '';
                         if (data.choices && data.choices[0] && data.choices[0].message) {
-                            aiText = data.choices[0].message.content; // Standard OpenAI format
+                            aiText = data.choices[0].message.content;
                         } else if (data.response) {
-                            aiText = data.response; // Common alternative
+                            aiText = data.response;
                         } else {
-                            aiText = JSON.stringify(data); // Fallback
+                            aiText = JSON.stringify(data);
                         }
 
-                        // Extract JSON array from text (removes markdown formatting like ```json ... ```)
-                        const jsonMatch = aiText.match(/\[[\s\S]*\]/);
-                        if (!jsonMatch) throw new Error("Could not find a JSON array in the API response.");
-                        
-                        const parsedQuiz = JSON.parse(jsonMatch[0]);
+                        // ---- ROBUST JSON EXTRACTION ENGINE ----
+                        let parsedQuiz = null;
+                        const rawText = aiText.trim();
 
-                        if (!Array.isArray(parsedQuiz) || parsedQuiz.length === 0) {
-                            throw new Error("API did not return a valid array of questions.");
+                        // Strategy 1: Try parsing the text exactly as-is
+                        try {
+                            parsedQuiz = JSON.parse(rawText);
+                        } catch (e1) {
+                            // Strategy 2: Look for Markdown codeblocks (```json ... ```)
+                            const mdMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+                            if (mdMatch) {
+                                try {
+                                    parsedQuiz = JSON.parse(mdMatch[1]);
+                                } catch (e2) {}
+                            }
+                            
+                            // Strategy 3: Brute-force fallback (Find largest valid JSON array)
+                            if (!parsedQuiz) {
+                                const startIdx = rawText.indexOf('[');
+                                if (startIdx !== -1) {
+                                    // Iterate backwards to find the correct closing bracket
+                                    for (let i = rawText.length - 1; i >= startIdx; i--) {
+                                        if (rawText[i] === ']') {
+                                            try {
+                                                const possibleJson = rawText.substring(startIdx, i + 1);
+                                                parsedQuiz = JSON.parse(possibleJson);
+                                                break; // Success! Break out of the loop
+                                            } catch (e3) {
+                                                // Invalid bracket, keep moving backwards
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!parsedQuiz || !Array.isArray(parsedQuiz) || parsedQuiz.length === 0) {
+                            console.error("Raw AI Output:", aiText); // Logs to console for debugging
+                            throw new Error("Could not extract a valid JSON array from the AI's response.");
                         }
 
                         quizData.value = parsedQuiz;
