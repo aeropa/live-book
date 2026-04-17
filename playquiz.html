@@ -178,8 +178,8 @@
                     isLoading.value = true;
                     errorMessage.value = '';
 
-                    // Stricter prompt to discourage extra conversational text
-                    const promptInput = `Return ONLY a valid JSON array. Do not include markdown formatting, backticks, or introductory text. Create a multiple-choice quiz of 10 questions on the topic of ${topic.value}. Each question has 4 choices, and the answer key should provide explanation. Output EXACTLY this structure: [{"question": "...", "choices": ["...", "...", "...", "..."], "correctAnswerIndex": 0, "explanation": "..."}]`;
+                    // UPDATED PROMPT: Requesting the "all_data" wrapper as specified
+                    const promptInput = `Return ONLY a valid JSON object. Do not include markdown formatting or introductory text. Create a multiple-choice quiz of 10 questions on the topic of ${topic.value}. Each question has 4 choices, and the answer key should provide explanation. The json format should have a field named all_data that contains all the data above. Output EXACTLY this structure: {"all_data": [{"question": "...", "choices": ["...", "...", "...", "..."], "correctAnswerIndex": 0, "explanation": "..."}]}`;
 
                     try {
                         const response = await fetch('https://api.groq.com/openai/v1/responses', {
@@ -210,33 +210,33 @@
                             aiText = JSON.stringify(data);
                         }
 
-                        // ---- ROBUST JSON EXTRACTION ENGINE ----
-                        let parsedQuiz = null;
+                        // ---- UPDATED PARSING ENGINE FOR "all_data" ----
+                        let parsedObj = null;
                         const rawText = aiText.trim();
 
                         // Strategy 1: Try parsing the text exactly as-is
                         try {
-                            parsedQuiz = JSON.parse(rawText);
+                            parsedObj = JSON.parse(rawText);
                         } catch (e1) {
-                            // Strategy 2: Look for Markdown codeblocks (```json ... ```)
+                            // Strategy 2: Look for Markdown codeblocks (```json { ... } ```)
                             const mdMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
                             if (mdMatch) {
                                 try {
-                                    parsedQuiz = JSON.parse(mdMatch[1]);
+                                    parsedObj = JSON.parse(mdMatch[1]);
                                 } catch (e2) {}
                             }
                             
-                            // Strategy 3: Brute-force fallback (Find largest valid JSON array)
-                            if (!parsedQuiz) {
-                                const startIdx = rawText.indexOf('[');
+                            // Strategy 3: Brute-force fallback looking for the outer { }
+                            if (!parsedObj) {
+                                const startIdx = rawText.indexOf('{');
                                 if (startIdx !== -1) {
-                                    // Iterate backwards to find the correct closing bracket
+                                    // Iterate backwards to find the closing bracket
                                     for (let i = rawText.length - 1; i >= startIdx; i--) {
-                                        if (rawText[i] === ']') {
+                                        if (rawText[i] === '}') {
                                             try {
                                                 const possibleJson = rawText.substring(startIdx, i + 1);
-                                                parsedQuiz = JSON.parse(possibleJson);
-                                                break; // Success! Break out of the loop
+                                                parsedObj = JSON.parse(possibleJson);
+                                                break;
                                             } catch (e3) {
                                                 // Invalid bracket, keep moving backwards
                                             }
@@ -246,12 +246,14 @@
                             }
                         }
 
-                        if (!parsedQuiz || !Array.isArray(parsedQuiz) || parsedQuiz.length === 0) {
-                            console.error("Raw AI Output:", aiText); // Logs to console for debugging
-                            throw new Error("Could not extract a valid JSON array from the AI's response.");
+                        // Verify we got the object AND it has the all_data array
+                        if (!parsedObj || !parsedObj.all_data || !Array.isArray(parsedObj.all_data)) {
+                            console.error("Raw AI Output:", aiText);
+                            throw new Error("Could not extract the 'all_data' field from the AI's response.");
                         }
 
-                        quizData.value = parsedQuiz;
+                        // Assign the parsed all_data array to our game state
+                        quizData.value = parsedObj.all_data;
                         gameState.value = 'playing';
 
                     } catch (error) {
